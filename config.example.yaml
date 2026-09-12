@@ -1,0 +1,81 @@
+# meshcore-irc-bridge configuration.
+#
+# Copy this file to config.yaml and edit it for your setup:
+#   cp config.example.yaml config.yaml
+#
+# Secrets support ${ENV_VAR} interpolation, so passwords don't need to sit
+# in this file in plaintext -- e.g. password: "${IRC_SASL_PASSWORD}".
+
+mesh:
+  connection:
+    # One of: ble | serial | tcp
+    type: ble
+
+    # --- ble ---
+    address: "AA:BB:CC:DD:EE:FF"
+
+    # --- serial (uncomment and remove the ble fields above) ---
+    # type: serial
+    # port: /dev/ttyUSB0
+    # baudrate: 115200
+
+    # --- tcp (uncomment and remove the ble fields above) ---
+    # type: tcp
+    # host: 192.168.1.50
+    # port: 5000
+
+  # Let the meshcore library itself retry a dropped transport before this
+  # bridge gives up and reconnects from scratch.
+  auto_reconnect: true
+  max_reconnect_attempts: 5
+
+irc:
+  server: irc.libera.chat
+  port: 6697
+  tls: true
+  nickname: meshcore-bridge
+  # Defaults to `nickname` if omitted.
+  username: meshcore
+  realname: MeshCore IRC Bridge
+
+  auth:
+    # One of: sasl | nickserv | none
+    #
+    # The mode is fixed here -- if it fails (server doesn't offer SASL, a
+    # password is rejected, ...) the bridge logs the failure and retries
+    # the *same* mode on reconnect, it does not silently fall back to a
+    # different method.
+    mode: sasl
+
+    # --- sasl (AUTHENTICATE PLAIN, before registration completes) ---
+    sasl:
+      username: mynick
+      password: "${IRC_SASL_PASSWORD}"
+
+    # --- nickserv (connect unauthenticated, IDENTIFY, then wait before
+    #     joining channels -- for networks without SASL) ---
+    # auth:
+    #   mode: nickserv
+    #   nickserv:
+    #     password: "${IRC_NICKSERV_PASSWORD}"
+    #     join_wait_seconds: 5   # default 5
+
+    # --- none (fully unregistered nickname, joins immediately) ---
+    # auth:
+    #   mode: none
+
+  reconnect:
+    initial_delay_seconds: 1
+    max_delay_seconds: 60
+
+# Mesh channel index -> IRC channel mapping. Each mesh channel maps to
+# exactly one IRC channel; several mesh channels may map to the same IRC
+# channel. To create or rename a channel on the radio itself, use
+# meshcorectl (https://github.com/Faradome/meshcorectl):
+#   meshcorectl create channel 0 "General"
+#   meshcorectl get channels
+channels:
+  - mesh_channel: 0
+    irc_channel: "#mesh-general"
+  - mesh_channel: 1
+    irc_channel: "#mesh-emergency"
