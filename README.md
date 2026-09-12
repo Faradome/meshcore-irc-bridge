@@ -4,7 +4,7 @@
 > repository were produced by an AI coding agent (Claude), directed and reviewed by a human
 > maintainer.
 
-A one-way bridge: it connects to a [MeshCore](https://meshcore.co.uk/) companion
+A one-way bridge: it connects to a [MeshCore](https://meshcore.io/) companion
 radio, listens for channel messages, and relays them into IRC channels — one
 mesh channel mapped to one IRC channel. It never sends anything back to the
 mesh; IRC messages are received and ignored.
@@ -18,11 +18,24 @@ support for connecting with a fully unregistered nickname.
 
 ## Install
 
+Published on PyPI as [`meshcore-irc-bridge`](https://pypi.org/project/meshcore-irc-bridge/).
+The recommended way to install it is [pipx](https://pipx.pypa.io/), which puts
+the `meshcore-irc-bridge` command on your PATH in its own isolated
+environment, without touching your system Python packages:
+
+```bash
+pipx install meshcore-irc-bridge
+```
+
+Plain `pip` works too, ideally in a virtual environment:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"    # from a checkout, until this is published
+pip install meshcore-irc-bridge
 ```
+
+To install from a checkout for development instead, see [Development](#development) below.
 
 ## Configure
 
