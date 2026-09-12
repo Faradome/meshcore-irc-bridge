@@ -1,10 +1,8 @@
 """Bridge configuration: YAML load, validation, and ``${ENV_VAR}`` interpolation.
 
 Plain dataclasses with validation in ``__post_init__`` and a hand-rolled YAML
-loader -- no schema library dependency -- mirroring the conventions of
-``meshcorectl``'s ``context_store.py`` (same author, same `meshcore`
-dependency, same "raise a clear ConfigError, no silent defaults for
-anything security sensitive" philosophy).
+loader -- no schema library dependency. Raises a clear ConfigError instead of
+silently defaulting anything security sensitive.
 """
 
 from __future__ import annotations
@@ -30,10 +28,7 @@ class ConfigError(Exception):
 class MeshConnectionConfig:
     """How to reach the companion radio: exactly one of ble/serial/tcp.
 
-    Field names mirror `meshcorectl`'s `ConnectionSpec`
-    (`/Users/william/src/meshcore/src/meshcorectl/context_store.py`) for a
-    reader already familiar with that project: `port` is the serial device
-    path, `tcp_port` is the TCP port number.
+    `port` is the serial device path; `tcp_port` is the TCP port number.
     """
 
     kind: str
@@ -259,9 +254,9 @@ def _build_mesh_config(raw: dict[str, Any]) -> MeshConfig:
     kind = _require(connection_raw, "type", "mesh.connection")
 
     # tcp's "port" key is a port *number*, serial's "port" key is a device
-    # *path* -- both spelled `port` in YAML (matching meshcorectl's own
-    # ConnectionSpec), disambiguated here by `kind` before it reaches the
-    # dataclass's two separate fields (`port` / `tcp_port`).
+    # *path* -- both spelled `port` in YAML, disambiguated here by `kind`
+    # before it reaches the dataclass's two separate fields (`port` /
+    # `tcp_port`).
     tcp_port = 5000
     if kind == "tcp":
         tcp_port = _coerce_int(connection_raw.get("port", 5000), "mesh.connection.port")

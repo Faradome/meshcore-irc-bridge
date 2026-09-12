@@ -1,12 +1,10 @@
 """Opens a live connection to the companion radio described by a
 `MeshConfig`.
 
-Mirrors `meshcorectl`'s own connection seam
-(`/Users/william/src/meshcore/src/meshcorectl/connect.py`): `meshcore.MeshCore`
-is imported inside `connect()`, not at module scope, so tests can
-monkeypatch `MeshCore.create_ble/create_serial/create_tcp` without ever
-importing `bleak`/`pyserial` for real, and `bridge.py` depends only on the
-small `MeshCoreConnection` protocol below, never on `meshcore.MeshCore`
+`meshcore.MeshCore` is imported inside `connect()`, not at module scope, so
+tests can monkeypatch `MeshCore.create_ble/create_serial/create_tcp` without
+ever importing `bleak`/`pyserial` for real, and `bridge.py` depends only on
+the small `MeshCoreConnection` protocol below, never on `meshcore.MeshCore`
 directly.
 """
 

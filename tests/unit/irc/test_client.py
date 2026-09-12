@@ -621,15 +621,14 @@ async def test_unexpected_disconnect_during_nickserv_join_wait_raises(server):
 # ---------------------------------------------------------------------------
 # PING watchdog: detect a peer that goes silent without closing the socket
 #
-# The bug this guards against (found in a sibling project's IRC bridge,
-# alertmanager-irc-bridge.py at hp-talos): a peer that disappears without a
-# FIN -- a netsplit, a middlebox silently dropping the flow, the server
-# process being killed -- is indistinguishable from an idle one from here;
-# both deliver nothing. A plain unbounded read never raises anything in that
-# case, so nothing notices; the socket sits ESTABLISHED forever and no
-# reconnect is ever triggered. These tests simulate exactly that: the fake
-# server accepts the connection and then simply stops sending anything at
-# all (never closes it either), and the client must still notice on its own.
+# A peer that disappears without a FIN -- a netsplit, a middlebox silently
+# dropping the flow, the server process being killed -- is indistinguishable
+# from an idle one from here; both deliver nothing. A plain unbounded read
+# never raises anything in that case, so nothing notices; the socket sits
+# ESTABLISHED forever and no reconnect is ever triggered. These tests
+# simulate exactly that: the fake server accepts the connection and then
+# simply stops sending anything at all (never closes it either), and the
+# client must still notice on its own.
 # ---------------------------------------------------------------------------
 
 
@@ -683,9 +682,9 @@ async def test_ping_watchdog_declares_the_link_dead_after_timeout(server):
 
 
 async def test_ping_watchdog_detects_a_true_black_hole_without_any_close(server):
-    # The exact failure mode from the sibling project: the peer never
-    # sends a FIN/RST either -- it just stops responding completely.
-    # FakeIRCConnection.close() is deliberately never called here.
+    # The peer never sends a FIN/RST either -- it just stops responding
+    # completely. FakeIRCConnection.close() is deliberately never called
+    # here.
     config = make_config(server, ping_idle_seconds=0.05, ping_timeout_seconds=0.05)
     client, task, _conn = await _get_to_ready(server, config)
 
