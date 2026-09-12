@@ -59,6 +59,12 @@ cp config.example.yaml config.yaml
       irc_channel: "#mesh-emergency"
   ```
 
+  Several mesh channels may map to the same IRC channel. When they do,
+  each relayed line is prefixed with `[<mesh_channel>] ` so messages from
+  either stay attributable once interleaved there (e.g. `[0] hello`,
+  `[1] hi`); a mesh channel with an IRC channel all to itself is left
+  unprefixed.
+
 ### Setting up a channel on the radio itself
 
 This bridge only *reads* channel messages — it never creates, renames, or
