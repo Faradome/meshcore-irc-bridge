@@ -1,5 +1,9 @@
 # meshcore-irc-bridge
 
+> **This is an AI-generated application.** The design, code, tests, and documentation in this
+> repository were produced by an AI coding agent (Claude), directed and reviewed by a human
+> maintainer.
+
 A one-way bridge: it connects to a [MeshCore](https://meshcore.co.uk/) companion
 radio, listens for channel messages, and relays them into IRC channels — one
 mesh channel mapped to one IRC channel. It never sends anything back to the
