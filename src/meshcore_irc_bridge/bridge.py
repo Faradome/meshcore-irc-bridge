@@ -72,6 +72,20 @@ class Bridge:
         self._mesh_client: MeshCoreConnection | None = None
         self._stopping = False
 
+        # IRC channels fed by more than one mesh channel: messages routed
+        # there get a "[<mesh_channel>] " prefix (see _on_channel_message)
+        # so they stay attributable once several mesh channels' traffic is
+        # interleaved in one place. Computed once from the static config,
+        # not from observed traffic -- two mesh channels mapped to the
+        # same IRC channel are always potentially ambiguous, even before
+        # both have actually sent anything in a given run.
+        counts: dict[str, int] = {}
+        for mapping in config.channels:
+            counts[mapping.irc_channel] = counts.get(mapping.irc_channel, 0) + 1
+        self._shared_irc_channels = frozenset(
+            channel for channel, count in counts.items() if count > 1
+        )
+
     @staticmethod
     def _default_irc_client_factory(irc_config: IrcConfig, channels: Sequence[str]) -> IRCClient:
         return IRCClient(irc_config, channels)
@@ -217,7 +231,10 @@ class Bridge:
         if irc_channel is None:
             logger.debug("dropping channel message for unmapped mesh channel %r", channel_idx)
             return
-        for line in format_channel_message(event.payload):
+        # Only prefix when this IRC channel is actually shared -- the
+        # common case (one mesh channel, one IRC channel) stays unadorned.
+        prefix = f"[{channel_idx}] " if irc_channel in self._shared_irc_channels else ""
+        for line in format_channel_message(event.payload, prefix=prefix):
             self._enqueue(irc_channel, line)
 
     def _enqueue(self, irc_channel: str, text: str) -> None:

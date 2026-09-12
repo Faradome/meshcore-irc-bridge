@@ -187,6 +187,10 @@ async def test_drops_message_for_unmapped_mesh_channel(fake_irc_clients, fake_me
 async def test_multiple_mesh_channels_can_map_to_the_same_irc_channel(
     fake_irc_clients, fake_mesh_clients
 ):
+    # Two mesh channels sharing one IRC destination is exactly the case
+    # that needs the "[<mesh_channel>] " disambiguating prefix -- without
+    # it, messages from either mesh channel would be indistinguishable
+    # once interleaved in the same IRC channel.
     irc_factory, irc_clients = fake_irc_clients
     mesh_connect, mesh_clients = fake_mesh_clients
     config = make_bridge_config(
@@ -205,7 +209,59 @@ async def test_multiple_mesh_channels_can_map_to_the_same_irc_channel(
     mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "a"))
     mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(1, "b"))
     await wait_until(lambda: len(irc_clients[0].sent) == 2)
-    assert irc_clients[0].sent == [("#general", "a"), ("#general", "b")]
+    assert irc_clients[0].sent == [("#general", "[0] a"), ("#general", "[1] b")]
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+async def test_unique_mesh_to_irc_mapping_gets_no_prefix(fake_irc_clients, fake_mesh_clients):
+    # The common case -- one mesh channel, one IRC channel, nothing
+    # shared -- must stay unadorned; only ambiguous destinations need the
+    # prefix.
+    irc_factory, irc_clients = fake_irc_clients
+    mesh_connect, mesh_clients = fake_mesh_clients
+    config = make_bridge_config(
+        channels=(ChannelMapping(mesh_channel=0, irc_channel="#general"),)
+    )
+    bridge = Bridge(config, mesh_connect=mesh_connect, irc_client_factory=irc_factory)
+    task = await _run_and_stop(bridge)
+
+    await wait_until(lambda: mesh_clients and irc_clients and irc_clients[0].is_ready)
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "hi"))
+    await wait_until(lambda: irc_clients[0].sent)
+    assert irc_clients[0].sent == [("#general", "hi")]
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+async def test_prefix_applies_only_to_the_shared_destination(fake_irc_clients, fake_mesh_clients):
+    # Mixed config: channels 0 and 1 share #general (ambiguous, prefixed);
+    # channel 2 has #other all to itself (unambiguous, unprefixed).
+    irc_factory, irc_clients = fake_irc_clients
+    mesh_connect, mesh_clients = fake_mesh_clients
+    config = make_bridge_config(
+        channels=(
+            ChannelMapping(mesh_channel=0, irc_channel="#general"),
+            ChannelMapping(mesh_channel=1, irc_channel="#general"),
+            ChannelMapping(mesh_channel=2, irc_channel="#other"),
+        )
+    )
+    bridge = Bridge(config, mesh_connect=mesh_connect, irc_client_factory=irc_factory)
+    assert bridge._shared_irc_channels == frozenset({"#general"})
+    task = await _run_and_stop(bridge)
+
+    await wait_until(lambda: mesh_clients and irc_clients and irc_clients[0].is_ready)
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "a"))
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(1, "b"))
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(2, "c"))
+    await wait_until(lambda: len(irc_clients[0].sent) == 3)
+    assert irc_clients[0].sent == [
+        ("#general", "[0] a"),
+        ("#general", "[1] b"),
+        ("#other", "c"),
+    ]
 
     await bridge.stop()
     await asyncio.wait_for(task, timeout=2)

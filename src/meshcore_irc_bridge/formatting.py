@@ -50,7 +50,7 @@ def _wrap_to_byte_limit(text: str, max_bytes: int) -> list[str]:
 
 
 def format_channel_message(
-    payload: dict[str, Any], *, max_line_bytes: int = MAX_LINE_BYTES
+    payload: dict[str, Any], *, max_line_bytes: int = MAX_LINE_BYTES, prefix: str = ""
 ) -> list[str]:
     """Convert a `CHANNEL_MSG_RECV` event payload into IRC-safe PRIVMSG lines.
 
@@ -62,14 +62,25 @@ def format_channel_message(
       splitting a multi-byte character) rather than silently truncated.
     - A missing/non-string/empty `text`, or one that is blank once split,
       produces no output lines at all.
+    - `prefix` (e.g. `"[1] "`, the mesh channel index) is prepended to
+      *every* output line, not just the first -- callers pass this when
+      several mesh channels share one IRC destination, so each line is
+      still self-describing on its own rather than only the first of a
+      multi-line message. It counts against `max_line_bytes`, so the
+      *content* wraps shorter rather than the whole line running over.
     """
     text = payload.get("text")
     if not isinstance(text, str) or not text:
         return []
 
+    # A floor of 1 keeps _wrap_to_byte_limit well-defined even for a
+    # pathological prefix at or beyond the line budget on its own -- it
+    # degrades to one character per chunk rather than looping or crashing.
+    available = max(max_line_bytes - len(prefix.encode("utf-8")), 1)
+
     lines: list[str] = []
     for logical_line in _LINE_SPLIT.split(text):
         if not logical_line.strip():
             continue
-        lines.extend(_wrap_to_byte_limit(logical_line, max_line_bytes))
+        lines.extend(f"{prefix}{chunk}" for chunk in _wrap_to_byte_limit(logical_line, available))
     return lines

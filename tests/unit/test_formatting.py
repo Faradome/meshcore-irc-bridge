@@ -98,3 +98,45 @@ def test_format_channel_message_multiple_lines_each_wrapped_in_order():
     text = ("a" * 12) + "\n" + ("b" * 12)
     lines = format_channel_message(_payload(text), max_line_bytes=5)
     assert lines == ["a" * 5, "a" * 5, "a" * 2, "b" * 5, "b" * 5, "b" * 2]
+
+
+# ---------------------------------------------------------------------------
+# prefix (used when several mesh channels share one IRC destination)
+# ---------------------------------------------------------------------------
+
+
+def test_format_channel_message_no_prefix_by_default():
+    assert format_channel_message(_payload("hello")) == ["hello"]
+
+
+def test_format_channel_message_prefix_prepended_to_a_single_line():
+    lines = format_channel_message(_payload("hello"), prefix="[1] ")
+    assert lines == ["[1] hello"]
+
+
+def test_format_channel_message_prefix_applied_to_every_split_line():
+    # Every line self-describing, not just the first -- lines can arrive
+    # interleaved with other channels' traffic on a shared destination.
+    text = "line one\nline two\nline three"
+    lines = format_channel_message(_payload(text), prefix="[2] ")
+    assert lines == ["[2] line one", "[2] line two", "[2] line three"]
+
+
+def test_format_channel_message_prefix_counts_against_the_byte_budget():
+    # With a 10-byte budget and a 4-byte prefix, only 6 bytes of content
+    # fit per line -- the *whole* rendered line must still respect the cap.
+    lines = format_channel_message(_payload("abcdefghijkl"), max_line_bytes=10, prefix="[1] ")
+    assert lines == ["[1] abcdef", "[1] ghijkl"]
+    for line in lines:
+        assert len(line.encode("utf-8")) <= 10
+
+
+def test_format_channel_message_prefix_wider_than_budget_still_emits_one_char_chunks():
+    # Pathological: the prefix alone exceeds max_line_bytes. Must not
+    # crash or loop -- degrades to one content character per line instead.
+    lines = format_channel_message(_payload("hi"), max_line_bytes=2, prefix="[999999] ")
+    assert lines == ["[999999] h", "[999999] i"]
+
+
+def test_format_channel_message_empty_text_with_prefix_still_yields_nothing():
+    assert format_channel_message(_payload(""), prefix="[1] ") == []
