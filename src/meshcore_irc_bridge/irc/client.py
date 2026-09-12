@@ -270,8 +270,50 @@ class IRCClient:
             await self._send("JOIN", channel)
 
     async def _read_loop(self) -> None:
+        """Read server traffic forever, answering PING and dropping
+        everything else -- and independently watch for silence.
+
+        A peer that goes away without closing the socket (netsplit, a
+        middlebox silently dropping the flow, the server process being
+        killed) is indistinguishable from an idle one: both produce
+        nothing. A plain, unbounded `await read()` never raises anything
+        in that case, so nothing here would ever notice -- the OS can be
+        left showing the connection ESTABLISHED while this loop waits
+        forever. So every read is bounded, not just the registration/join
+        phases (which already had an overall deadline): after
+        `ping_idle_seconds` of silence, send our own PING -- a question
+        the server must answer -- and if no byte at all arrives within
+        `ping_timeout_seconds` after that, treat the link as dead.
+        """
+        loop = asyncio.get_running_loop()
+        idle_seconds = self._config.ping_idle_seconds
+        timeout_seconds = self._config.ping_timeout_seconds
+        last_rx = loop.time()
+        ping_sent_at: float | None = None
+
         while True:
-            msg = await self._next_message()
+            now = loop.time()
+            if ping_sent_at is not None:
+                wait_seconds = timeout_seconds - (now - ping_sent_at)
+                if wait_seconds <= 0:
+                    raise IRCConnectionClosed(
+                        f"no data for {now - last_rx:.0f}s and no reply "
+                        f"{now - ping_sent_at:.0f}s after our own PING -- link is dead"
+                    )
+            else:
+                wait_seconds = idle_seconds - (now - last_rx)
+                if wait_seconds <= 0:
+                    await self._send("PING", trailing=str(int(now)))
+                    ping_sent_at = now
+                    continue
+
+            try:
+                msg = await asyncio.wait_for(self._next_message(), timeout=wait_seconds)
+            except TimeoutError:
+                continue
+
+            last_rx = loop.time()
+            ping_sent_at = None  # any byte at all proves the link is alive
             if msg.command == "PING":
                 await self._send("PONG", trailing=msg.param(0, ""))
             # Anything else (PRIVMSG, NOTICE, ...) from IRC: one-way

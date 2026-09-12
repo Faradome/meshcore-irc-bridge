@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 
 import pytest
 
@@ -279,3 +280,37 @@ async def test_close_is_safe_to_call_twice(loopback):
     client, _server_side = loopback
     await client.close()
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# TCP keepalive (belt-and-braces beneath IRCClient's own PING watchdog)
+# ---------------------------------------------------------------------------
+
+
+async def test_open_enables_so_keepalive_on_a_real_socket(loopback):
+    client, _server_side = loopback
+    sock = client._writer.get_extra_info("socket")
+    assert sock is not None
+    assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
+
+
+def test_enable_tcp_keepalive_tolerates_a_writer_with_no_real_socket():
+    class _FakeWriterNoSocket:
+        def get_extra_info(self, name):
+            return None
+
+    # Must not raise even though there's no socket to configure.
+    IRCConnection(reader=object(), writer=_FakeWriterNoSocket())
+
+
+def test_enable_tcp_keepalive_suppresses_setsockopt_errors():
+    class _FakeSocket:
+        def setsockopt(self, *args, **kwargs):
+            raise OSError("keepalive not supported on this fake platform")
+
+    class _FakeWriterBadSocket:
+        def get_extra_info(self, name):
+            return _FakeSocket()
+
+    # Must not raise -- this is best-effort, not load-bearing.
+    IRCConnection(reader=object(), writer=_FakeWriterBadSocket())

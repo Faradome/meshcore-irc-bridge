@@ -616,3 +616,96 @@ async def test_unexpected_disconnect_during_nickserv_join_wait_raises(server):
 
     with pytest.raises(IRCConnectionClosed):
         await task
+
+
+# ---------------------------------------------------------------------------
+# PING watchdog: detect a peer that goes silent without closing the socket
+#
+# The bug this guards against (found in a sibling project's IRC bridge,
+# alertmanager-irc-bridge.py at hp-talos): a peer that disappears without a
+# FIN -- a netsplit, a middlebox silently dropping the flow, the server
+# process being killed -- is indistinguishable from an idle one from here;
+# both deliver nothing. A plain unbounded read never raises anything in that
+# case, so nothing notices; the socket sits ESTABLISHED forever and no
+# reconnect is ever triggered. These tests simulate exactly that: the fake
+# server accepts the connection and then simply stops sending anything at
+# all (never closes it either), and the client must still notice on its own.
+# ---------------------------------------------------------------------------
+
+
+async def test_ping_watchdog_sends_our_own_ping_after_idle(server):
+    config = make_config(server, ping_idle_seconds=0.05, ping_timeout_seconds=5)
+    client, task, conn = await _get_to_ready(server, config)
+
+    # The fake server sends nothing at all from here -- a silent peer, not
+    # a closed one. The client must notice on its own and probe.
+    line = await conn.recv_line()
+    assert line.startswith("PING :")
+
+    await client.stop()
+    await task
+
+
+async def test_ping_watchdog_any_reply_resets_the_idle_clock(server):
+    config = make_config(server, ping_idle_seconds=0.05, ping_timeout_seconds=5)
+    client, task, conn = await _get_to_ready(server, config)
+
+    line = await conn.recv_line()
+    assert line.startswith("PING :")
+    token = line.removeprefix("PING :")
+    # Any byte at all counts, not specifically a matching PONG -- reply
+    # with a NOTICE instead, and the link must still be considered alive.
+    await conn.send_line(f":irc.example NOTICE meshbot :re: {token}")
+
+    # Receiving a *second* probe at all (rather than nothing, or the link
+    # being declared dead) proves the reply reset the idle clock instead
+    # of just disabling the watchdog outright. (The token itself -- a
+    # truncated-to-whole-seconds timestamp -- can legitimately repeat
+    # when both probes land in the same second at this test's 0.05s
+    # idle interval, so it isn't asserted unique here.)
+    line2 = await conn.recv_line()
+    assert line2.startswith("PING :")
+
+    await client.stop()
+    await task
+
+
+async def test_ping_watchdog_declares_the_link_dead_after_timeout(server):
+    config = make_config(server, ping_idle_seconds=0.05, ping_timeout_seconds=0.05)
+    client, task, conn = await _get_to_ready(server, config)
+
+    line = await conn.recv_line()
+    assert line.startswith("PING :")
+    # ... and then the peer goes fully silent -- no reply, no close.
+
+    with pytest.raises(IRCConnectionClosed, match="link is dead"):
+        await task
+
+
+async def test_ping_watchdog_detects_a_true_black_hole_without_any_close(server):
+    # The exact failure mode from the sibling project: the peer never
+    # sends a FIN/RST either -- it just stops responding completely.
+    # FakeIRCConnection.close() is deliberately never called here.
+    config = make_config(server, ping_idle_seconds=0.05, ping_timeout_seconds=0.05)
+    client, task, _conn = await _get_to_ready(server, config)
+
+    with pytest.raises(IRCConnectionClosed, match="link is dead"):
+        await asyncio.wait_for(task, timeout=2)
+    assert client.is_ready is False
+
+
+async def test_ping_watchdog_does_not_probe_while_traffic_is_flowing(server):
+    config = make_config(server, ping_idle_seconds=0.2, ping_timeout_seconds=5)
+    client, task, conn = await _get_to_ready(server, config)
+
+    # Keep the connection busy well inside the idle window; the client
+    # must not send an unprompted PING of its own while traffic flows.
+    for _ in range(3):
+        await asyncio.sleep(0.08)
+        await conn.send_line(":irc.example NOTICE meshbot :keepalive chatter")
+
+    await conn.send_line("PING :fromserver")
+    assert await conn.recv_line() == "PONG :fromserver"
+
+    await client.stop()
+    await task

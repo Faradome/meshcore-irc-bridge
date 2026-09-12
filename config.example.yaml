@@ -68,6 +68,16 @@ irc:
     initial_delay_seconds: 1
     max_delay_seconds: 60
 
+  # A dead peer (netsplit, a middlebox silently dropping the connection,
+  # the server being killed) can look identical to an idle one from here
+  # -- both send nothing. After this many seconds of silence the bridge
+  # sends its own PING; if nothing at all comes back within
+  # ping_timeout_seconds after that, the link is declared dead and
+  # reconnected. Tune ping_idle_seconds down if your network pings less
+  # often than the default assumes.
+  ping_idle_seconds: 120
+  ping_timeout_seconds: 60
+
 # Mesh channel index -> IRC channel mapping. Each mesh channel maps to
 # exactly one IRC channel; several mesh channels may map to the same IRC
 # channel. To create or rename a channel on the radio itself, use

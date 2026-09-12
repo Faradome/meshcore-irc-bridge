@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import socket
 import ssl
 from dataclasses import dataclass, field
 
@@ -122,6 +123,22 @@ class IRCConnection:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self._reader = reader
         self._writer = writer
+        self._enable_tcp_keepalive()
+
+    def _enable_tcp_keepalive(self) -> None:
+        """Best-effort belt-and-braces beneath `IRCClient`'s own
+        application-level PING watchdog: ask the OS to probe an idle
+        connection too. Not load-bearing on its own -- `SO_KEEPALIVE` is
+        off by default and, even enabled, most platforms' default probe
+        interval is hours -- but harmless to set, and free insurance on a
+        host tuned more aggressively. Silently a no-op if the writer
+        doesn't expose a real socket, or the platform doesn't support the
+        option.
+        """
+        sock = self._writer.get_extra_info("socket")
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
     @classmethod
     async def open(cls, host: str, port: int, *, tls: bool) -> IRCConnection:

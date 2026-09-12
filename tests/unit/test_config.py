@@ -165,6 +165,42 @@ def test_build_config_reconnect_defaults_and_overrides():
     assert cfg2.irc.reconnect.max_delay_seconds == 30.0
 
 
+def test_build_config_ping_watchdog_defaults():
+    cfg = build_config(_base_config())
+    assert cfg.irc.ping_idle_seconds == 120.0
+    assert cfg.irc.ping_timeout_seconds == 60.0
+
+
+def test_build_config_ping_watchdog_overrides():
+    raw = _base_config()
+    raw["irc"]["ping_idle_seconds"] = 30
+    raw["irc"]["ping_timeout_seconds"] = 15
+    cfg = build_config(raw)
+    assert cfg.irc.ping_idle_seconds == 30.0
+    assert cfg.irc.ping_timeout_seconds == 15.0
+
+
+def test_build_config_ping_idle_seconds_not_positive():
+    raw = _base_config()
+    raw["irc"]["ping_idle_seconds"] = 0
+    with pytest.raises(ConfigError, match="irc.ping_idle_seconds must be > 0"):
+        build_config(raw)
+
+
+def test_build_config_ping_timeout_seconds_not_positive():
+    raw = _base_config()
+    raw["irc"]["ping_timeout_seconds"] = -1
+    with pytest.raises(ConfigError, match="irc.ping_timeout_seconds must be > 0"):
+        build_config(raw)
+
+
+def test_build_config_ping_idle_seconds_not_a_number():
+    raw = _base_config()
+    raw["irc"]["ping_idle_seconds"] = "soon"
+    with pytest.raises(ConfigError, match="irc.ping_idle_seconds must be a number"):
+        build_config(raw)
+
+
 def test_build_config_irc_channel_using_ampersand_prefix():
     raw = _base_config()
     raw["channels"] = [{"mesh_channel": 0, "irc_channel": "&local"}]

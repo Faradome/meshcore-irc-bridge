@@ -134,6 +134,17 @@ class IrcConfig:
     username: str = ""
     realname: str = ""
     reconnect: ReconnectConfig = field(default_factory=ReconnectConfig)
+    # A peer that goes away without closing the socket (netsplit, a
+    # middlebox silently dropping the flow, the server process being
+    # killed) is indistinguishable from an idle one: both produce nothing,
+    # forever, and a plain blocking read never raises anything to trigger
+    # a reconnect -- the OS can be left showing ESTABLISHED with no timer
+    # armed. After `ping_idle_seconds` of silence the client sends its own
+    # PING (a question the server must answer); if no byte at all arrives
+    # within `ping_timeout_seconds` after that, the link is declared dead.
+    # Worst-case detection time is ping_idle_seconds + ping_timeout_seconds.
+    ping_idle_seconds: float = 120.0
+    ping_timeout_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         if not self.server:
@@ -146,6 +157,10 @@ class IrcConfig:
             object.__setattr__(self, "username", self.nickname)
         if not self.realname:
             object.__setattr__(self, "realname", self.nickname)
+        if self.ping_idle_seconds <= 0:
+            raise ConfigError("irc.ping_idle_seconds must be > 0")
+        if self.ping_timeout_seconds <= 0:
+            raise ConfigError("irc.ping_timeout_seconds must be > 0")
 
 
 @dataclass(frozen=True)
@@ -318,6 +333,12 @@ def _build_irc_config(raw: dict[str, Any]) -> IrcConfig:
         username=raw.get("username", ""),
         realname=raw.get("realname", ""),
         reconnect=_build_reconnect_config(raw.get("reconnect")),
+        ping_idle_seconds=_coerce_float(
+            raw.get("ping_idle_seconds", 120.0), "irc.ping_idle_seconds"
+        ),
+        ping_timeout_seconds=_coerce_float(
+            raw.get("ping_timeout_seconds", 60.0), "irc.ping_timeout_seconds"
+        ),
     )
 
 
