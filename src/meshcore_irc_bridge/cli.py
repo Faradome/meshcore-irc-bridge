@@ -68,6 +68,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        # `meshcore`'s own __init__.py calls logging.basicConfig() at
+        # import time (before this ever runs, since bridge.py imports
+        # from meshcore at module scope) -- without force=True this call
+        # is a silent no-op (per logging.basicConfig's own documented
+        # behavior when the root logger already has handlers), so
+        # --log-level and this format string would never actually apply.
+        force=True,
     )
 
     try:

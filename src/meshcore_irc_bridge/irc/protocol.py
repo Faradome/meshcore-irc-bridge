@@ -130,7 +130,17 @@ class IRCConnection:
         return cls(reader, writer)
 
     async def read_message(self) -> Message | None:
-        """Read and parse the next non-blank line, or `None` on a clean EOF."""
+        """Read and parse the next non-blank line, or `None` if the
+        connection is gone.
+
+        That covers both a clean EOF and any transport-level error
+        (`OSError`/`ssl.SSLError` and subclasses) -- notably, closing the
+        connection from a *different* task (as `stop()` does, concurrently
+        with this read) surfaces here as `ssl.SSLError:
+        APPLICATION_DATA_AFTER_CLOSE_NOTIFY` on a real TLS connection, not
+        a clean EOF; a plain reset surfaces as `ConnectionResetError`. Both
+        mean the same thing to a caller: this connection is over.
+        """
         while True:
             try:
                 raw = await self._reader.readuntil(b"\n")
@@ -138,6 +148,8 @@ class IRCConnection:
                 if not exc.partial:
                     return None
                 raw = exc.partial
+            except OSError:
+                return None
 
             line = raw.decode("utf-8", errors="replace")
             if line.strip("\r\n"):

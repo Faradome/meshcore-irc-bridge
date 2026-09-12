@@ -246,6 +246,23 @@ async def test_read_message_returns_none_on_clean_eof(loopback):
     assert msg is None
 
 
+async def test_read_message_returns_none_on_transport_error(loopback, monkeypatch):
+    # Found against real hardware/TLS: closing the connection from a
+    # *different* task while a read is in flight (exactly what stop()
+    # does concurrently with the read loop) surfaces on a real TLS
+    # connection as ssl.SSLError: APPLICATION_DATA_AFTER_CLOSE_NOTIFY, not
+    # a clean EOF/IncompleteReadError -- a plain reset would surface as
+    # ConnectionResetError. Both are OSError subclasses; read_message()
+    # must treat any of them as "the connection is gone", same as EOF.
+    client, _server_side = loopback
+
+    async def raise_reset(*_args, **_kwargs):
+        raise ConnectionResetError("simulated reset")
+
+    monkeypatch.setattr(client._reader, "readuntil", raise_reset)
+    assert await client.read_message() is None
+
+
 async def test_read_message_parses_final_unterminated_line_before_eof(loopback):
     client, server_side = loopback
     server_side.writer.write(b"PING :123")  # no trailing \n

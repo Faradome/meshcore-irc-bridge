@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import signal
 import subprocess
 import sys
@@ -76,6 +77,34 @@ def test_main_runs_bridge_and_returns_0(tmp_path, monkeypatch):
 
     assert cli.main(["--config", str(config_path)]) == 0
     assert len(built) == 1
+
+
+def test_main_applies_requested_log_level(tmp_path, monkeypatch):
+    # meshcore's own __init__.py calls logging.basicConfig() at import
+    # time (before main() ever runs, since bridge.py imports from
+    # meshcore at module scope) -- without force=True, main()'s own
+    # basicConfig() call would silently no-op and --log-level would never
+    # actually take effect.
+    root = logging.getLogger()
+    saved_level, saved_handlers = root.level, root.handlers[:]
+    try:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(_valid_config_dict()))
+
+        class FakeBridge:
+            def __init__(self, config):
+                pass
+
+            async def run(self):
+                return
+
+        monkeypatch.setattr(cli, "Bridge", FakeBridge)
+
+        assert cli.main(["--config", str(config_path), "--log-level", "DEBUG"]) == 0
+        assert root.level == logging.DEBUG
+    finally:
+        root.setLevel(saved_level)
+        root.handlers[:] = saved_handlers
 
 
 def test_main_handles_keyboard_interrupt(tmp_path, monkeypatch):
