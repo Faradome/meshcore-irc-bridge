@@ -76,6 +76,7 @@ class IRCClient:
         self._channels = list(dict.fromkeys(channels))
         self._registration_timeout = registration_timeout
         self._conn: IRCConnection | None = None
+        self._connect_task: asyncio.Task[IRCConnection] | None = None
         self._write_lock = asyncio.Lock()
         self._ready = False
         self._stopping = False
@@ -96,9 +97,24 @@ class IRCClient:
         failure; the caller retries with its own backoff.
         """
         self._stopping = False
-        self._conn = await IRCConnection.open(
-            self._config.server, self._config.port, tls=self._config.tls
+        # Tracked as a `Task` rather than awaited directly so `stop()` can
+        # cancel it: DNS + TCP + TLS handshake time is unbounded (no
+        # timeout on `asyncio.open_connection`), and before this completes
+        # there's no `self._conn` yet for `stop()` to close to unblock
+        # things -- without this, a `stop()` that lands during connect
+        # would have nothing to act on and would only take effect once
+        # (and if) the connect eventually finishes on its own.
+        self._connect_task = asyncio.ensure_future(
+            IRCConnection.open(self._config.server, self._config.port, tls=self._config.tls)
         )
+        try:
+            self._conn = await self._connect_task
+        except asyncio.CancelledError:
+            if self._stopping:
+                return
+            raise
+        finally:
+            self._connect_task = None
         try:
             try:
                 await self._run_session()
@@ -139,8 +155,16 @@ class IRCClient:
         await self._read_loop()
 
     async def stop(self) -> None:
-        """Ask a running `run_until_disconnected()` to return cleanly."""
+        """Ask a running `run_until_disconnected()` to return cleanly.
+
+        Handles both phases of a connection's lifetime: still connecting
+        (`self._conn` is `None` -- cancel the in-flight `IRCConnection.open()`
+        instead of leaving it to run to completion) and already connected
+        (close `self._conn` to unblock whatever read is in flight).
+        """
         self._stopping = True
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
         if self._conn is not None:
             await self._conn.close()
 

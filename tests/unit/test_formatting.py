@@ -140,3 +140,24 @@ def test_format_channel_message_prefix_wider_than_budget_still_emits_one_char_ch
 
 def test_format_channel_message_empty_text_with_prefix_still_yields_nothing():
     assert format_channel_message(_payload(""), prefix="[1] ") == []
+
+
+# ---------------------------------------------------------------------------
+# control character stripping (untrusted mesh input)
+# ---------------------------------------------------------------------------
+
+
+def test_format_channel_message_strips_c0_control_characters():
+    text = "Alice: hi\x00there\x1bworld"
+    assert format_channel_message(_payload(text)) == ["Alice: hithereworld"]
+
+
+def test_format_channel_message_keeps_tab():
+    # Tab is left alone as harmless formatting, unlike the rest of the C0
+    # control range.
+    assert format_channel_message(_payload("a\tb")) == ["a\tb"]
+
+
+def test_format_channel_message_line_of_only_control_chars_is_dropped():
+    text = "Alice: hello\n\x00\x1f\nAlice: world"
+    assert format_channel_message(_payload(text)) == ["Alice: hello", "Alice: world"]

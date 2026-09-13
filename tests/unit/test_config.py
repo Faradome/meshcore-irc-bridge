@@ -203,6 +203,72 @@ def test_build_config_ping_idle_seconds_not_a_number():
         build_config(raw)
 
 
+def test_build_config_min_send_interval_default_and_override():
+    cfg = build_config(_base_config())
+    assert cfg.irc.min_send_interval_seconds == 0.3
+
+    raw = _base_config()
+    raw["irc"]["min_send_interval_seconds"] = 1
+    cfg2 = build_config(raw)
+    assert cfg2.irc.min_send_interval_seconds == 1.0
+
+
+def test_build_config_min_send_interval_negative_is_rejected():
+    raw = _base_config()
+    raw["irc"]["min_send_interval_seconds"] = -0.1
+    with pytest.raises(ConfigError, match="irc.min_send_interval_seconds must be >= 0"):
+        build_config(raw)
+
+
+def test_build_config_min_send_interval_zero_is_allowed():
+    raw = _base_config()
+    raw["irc"]["min_send_interval_seconds"] = 0
+    cfg = build_config(raw)
+    assert cfg.irc.min_send_interval_seconds == 0.0
+
+
+def test_build_config_warns_on_cleartext_sasl(caplog):
+    raw = _base_config()
+    raw["irc"]["tls"] = False
+    raw["irc"]["auth"] = {
+        "mode": "sasl",
+        "sasl": {"username": "mynick", "password": "hunter2"},
+    }
+    with caplog.at_level("WARNING"):
+        build_config(raw)
+    assert "credentials will be sent unencrypted" in caplog.text
+
+
+def test_build_config_warns_on_cleartext_nickserv(caplog):
+    raw = _base_config()
+    raw["irc"]["tls"] = False
+    raw["irc"]["auth"] = {"mode": "nickserv", "nickserv": {"password": "hunter2"}}
+    with caplog.at_level("WARNING"):
+        build_config(raw)
+    assert "credentials will be sent unencrypted" in caplog.text
+
+
+def test_build_config_no_warning_for_cleartext_unregistered_auth(caplog):
+    # tls=False with auth.mode "none" has no credentials to expose --
+    # nothing to warn about.
+    raw = _base_config()
+    raw["irc"]["tls"] = False
+    with caplog.at_level("WARNING"):
+        build_config(raw)
+    assert "credentials will be sent unencrypted" not in caplog.text
+
+
+def test_build_config_no_warning_for_sasl_over_tls(caplog):
+    raw = _base_config()
+    raw["irc"]["auth"] = {
+        "mode": "sasl",
+        "sasl": {"username": "mynick", "password": "hunter2"},
+    }
+    with caplog.at_level("WARNING"):
+        build_config(raw)
+    assert "credentials will be sent unencrypted" not in caplog.text
+
+
 def test_build_config_irc_channel_using_ampersand_prefix():
     raw = _base_config()
     raw["channels"] = [{"mesh_channel": 0, "irc_channel": "&local"}]

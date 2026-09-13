@@ -38,6 +38,10 @@ def make_bridge_config(**channel_overrides) -> BridgeConfig:
             nickname="meshbot",
             auth=AuthConfig(mode="none"),
             reconnect=ReconnectConfig(initial_delay_seconds=0.01, max_delay_seconds=0.05),
+            # Pacing (min_send_interval_seconds) is exercised by its own
+            # dedicated tests below; disabled here so every other test's
+            # multi-message assertions aren't slowed down incidentally.
+            min_send_interval_seconds=0.0,
         ),
         channels=channels,
     )
@@ -761,3 +765,273 @@ async def test_run_propagates_unexpected_task_failure_and_cancels_siblings():
     # irc/queue-drain tasks rather than leaving them dangling.
     with pytest.raises(RuntimeError, match="totally unexpected"):
         await asyncio.wait_for(bridge.run(), timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# stop() interrupting an in-flight mesh connect (H1)
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_cancels_an_in_flight_mesh_connect(fake_irc_clients):
+    # mesh_connect (create_ble/create_serial/create_tcp underneath) has no
+    # timeout of its own -- TCP retries and BLE discovery can both take far
+    # longer than any reasonable shutdown should wait, and self._mesh_client
+    # is still None throughout, so stop()'s own disconnect() branch has
+    # nothing to act on. stop() must cancel the connect itself instead of
+    # only setting a flag nothing here would ever check.
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hanging_connect(_mesh_config):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    irc_factory, irc_clients = fake_irc_clients
+    config = make_bridge_config()
+    bridge = Bridge(config, mesh_connect=hanging_connect, irc_client_factory=irc_factory)
+    task = asyncio.create_task(bridge.run())
+
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await bridge.stop()
+    # Must return promptly -- not hang until the (never-completing) connect
+    # finishes on its own.
+    await asyncio.wait_for(task, timeout=1)
+
+    assert cancelled.is_set()
+
+
+async def test_mesh_connect_cancellation_propagates_when_not_stopping(fake_irc_clients):
+    # Distinct from test_stop_cancels_an_in_flight_mesh_connect: a
+    # cancellation that didn't come from our own stop() (_stopping still
+    # False) must propagate as a real CancelledError, not be swallowed as
+    # if it were a deliberate stop().
+    started = asyncio.Event()
+
+    async def hanging_connect(_mesh_config):
+        started.set()
+        await asyncio.Event().wait()
+
+    irc_factory, _irc_clients = fake_irc_clients
+    config = make_bridge_config()
+    bridge = Bridge(config, mesh_connect=hanging_connect, irc_client_factory=irc_factory)
+
+    task = asyncio.create_task(bridge._run_mesh_supervisor())
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_stop_is_a_noop_once_the_mesh_connect_has_already_finished(fake_mesh_clients):
+    # The counterpart to the above: once the connect task is done, stop()
+    # must not try to cancel it (a no-op on an already-done task, but
+    # exercised explicitly here rather than left implicit).
+    mesh_connect, mesh_clients = fake_mesh_clients
+    config = make_bridge_config()
+    bridge = Bridge(
+        config, mesh_connect=mesh_connect, irc_client_factory=lambda c, ch: FakeIRCClient(c, ch)
+    )
+    task = asyncio.create_task(bridge.run())
+    await wait_until(lambda: mesh_clients)
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# mesh session errors after connect must not crash the whole bridge (H2)
+# ---------------------------------------------------------------------------
+
+
+async def test_mesh_session_error_after_connect_triggers_reconnect_not_crash(fake_irc_clients):
+    # start_auto_message_fetching() (or either subscribe() call) raising
+    # something other than MeshConnectError -- e.g. a live BLE write
+    # failure the library doesn't convert into a DISCONNECTED event -- must
+    # be treated like an ordinary disconnect-and-reconnect, not propagate
+    # out of run() and tear down the (perfectly healthy) IRC side with it.
+    attempts = 0
+
+    class ExplodingOnceMeshClient(FakeMeshCore):
+        async def start_auto_message_fetching(self) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("simulated transient radio error")
+            self.auto_message_fetching_started = True
+
+    created: list[FakeMeshCore] = []
+
+    async def mesh_connect(_mesh_config):
+        client = ExplodingOnceMeshClient()
+        created.append(client)
+        return client
+
+    irc_factory, irc_clients = fake_irc_clients
+    config = make_bridge_config()
+    bridge = Bridge(
+        config,
+        mesh_connect=mesh_connect,
+        irc_client_factory=irc_factory,
+        mesh_reconnect_initial_delay=0.01,
+        mesh_reconnect_max_delay=0.02,
+    )
+    task = await _run_and_stop(bridge)
+
+    await wait_until(lambda: len(created) >= 2 and created[1].auto_message_fetching_started)
+    # The IRC side must never have been touched by the mesh-side error.
+    assert irc_clients[0].is_ready is True
+    assert irc_clients[0].stopped is False
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+async def test_mesh_session_error_logs_instead_of_propagating(fake_irc_clients, caplog):
+    class ExplodingMeshClient(FakeMeshCore):
+        async def start_auto_message_fetching(self) -> None:
+            raise RuntimeError("simulated transient radio error")
+
+    created: list[FakeMeshCore] = []
+
+    async def mesh_connect(_mesh_config):
+        client = ExplodingMeshClient()
+        created.append(client)
+        return client
+
+    irc_factory, irc_clients = fake_irc_clients
+    config = make_bridge_config()
+    bridge = Bridge(
+        config,
+        mesh_connect=mesh_connect,
+        irc_client_factory=irc_factory,
+        mesh_reconnect_initial_delay=0.01,
+        mesh_reconnect_max_delay=0.02,
+    )
+    task = await _run_and_stop(bridge)
+
+    with caplog.at_level("ERROR"):
+        await wait_until(lambda: len(created) >= 2)
+    assert "mesh session error" in caplog.text
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# outbound send pacing (M2)
+# ---------------------------------------------------------------------------
+
+
+async def test_queue_drain_paces_successive_sends(fake_mesh_clients):
+    mesh_connect, mesh_clients = fake_mesh_clients
+    created: list[FakeIRCClient] = []
+
+    def irc_factory(irc_config, channels):
+        client = FakeIRCClient(irc_config, channels)
+        created.append(client)
+        return client
+
+    config = BridgeConfig(
+        mesh=MeshConfig(connection=MeshConnectionConfig(kind="ble", address="AA:BB")),
+        irc=IrcConfig(
+            server="irc.example.org",
+            port=6697,
+            nickname="meshbot",
+            auth=AuthConfig(mode="none"),
+            reconnect=ReconnectConfig(initial_delay_seconds=0.01, max_delay_seconds=0.05),
+            min_send_interval_seconds=0.2,
+        ),
+        channels=(ChannelMapping(mesh_channel=0, irc_channel="#general"),),
+    )
+    bridge = Bridge(config, mesh_connect=mesh_connect, irc_client_factory=irc_factory)
+    task = await _run_and_stop(bridge)
+
+    await wait_until(lambda: mesh_clients and created and created[0].is_ready)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "a"))
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "b"))
+
+    await wait_until(lambda: len(created[0].sent) == 2, timeout=3)
+    # The second send must have been held back by ~min_send_interval_seconds
+    # rather than firing immediately back-to-back with the first.
+    assert loop.time() - start >= 0.2
+    assert created[0].sent == [("#general", "a"), ("#general", "b")]
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+async def test_queue_drain_pacing_disabled_by_default_zero_is_immediate(fake_mesh_clients):
+    # make_bridge_config() sets min_send_interval_seconds=0.0 explicitly;
+    # this proves that setting is actually load-bearing (no implicit
+    # pacing sneaks in when it's zero).
+    mesh_connect, mesh_clients = fake_mesh_clients
+    created: list[FakeIRCClient] = []
+
+    def irc_factory(irc_config, channels):
+        client = FakeIRCClient(irc_config, channels)
+        created.append(client)
+        return client
+
+    config = make_bridge_config()
+    bridge = Bridge(config, mesh_connect=mesh_connect, irc_client_factory=irc_factory)
+    task = await _run_and_stop(bridge)
+
+    await wait_until(lambda: mesh_clients and created and created[0].is_ready)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "a"))
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "b"))
+
+    await wait_until(lambda: len(created[0].sent) == 2, timeout=2)
+    assert loop.time() - start < 0.2
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# bounded send retries (M5)
+# ---------------------------------------------------------------------------
+
+
+async def test_persistently_failing_send_is_dropped_after_max_attempts(fake_mesh_clients, caplog):
+    mesh_connect, mesh_clients = fake_mesh_clients
+
+    class SelectivelyFailingIRCClient(FakeIRCClient):
+        async def send_privmsg(self, channel: str, text: str) -> None:
+            if text == "poison":
+                raise ConnectionError("simulated permanent failure")
+            await super().send_privmsg(channel, text)
+
+    created: list[FakeIRCClient] = []
+
+    def irc_factory(irc_config, channels):
+        client = SelectivelyFailingIRCClient(irc_config, channels)
+        created.append(client)
+        return client
+
+    config = make_bridge_config()
+    bridge = Bridge(config, mesh_connect=mesh_connect, irc_client_factory=irc_factory)
+    task = await _run_and_stop(bridge)
+
+    await wait_until(lambda: mesh_clients and created and created[0].is_ready)
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "poison"))
+    mesh_clients[0].fire(EventType.CHANNEL_MSG_RECV, channel_msg(0, "after"))
+
+    # "poison" must be dropped (not retried forever) so "after" -- stuck
+    # behind it in the same single queue -- eventually gets through too.
+    with caplog.at_level("ERROR"):
+        await wait_until(lambda: created[0].sent == [("#general", "after")], timeout=3)
+    assert "dropping message" in caplog.text
+    assert "poison" in caplog.text
+    assert len(bridge._queue) == 0
+
+    await bridge.stop()
+    await asyncio.wait_for(task, timeout=2)

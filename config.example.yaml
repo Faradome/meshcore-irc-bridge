@@ -25,7 +25,11 @@ mesh:
     # port: 5000
 
   # Let the meshcore library itself retry a dropped transport before this
-  # bridge gives up and reconnects from scratch.
+  # bridge gives up and reconnects from scratch. These two settings tune
+  # *that inner* retry loop only (flat ~1s interval, logged at DEBUG) --
+  # the bridge's own reconnect supervisor sits on top of it and always
+  # takes over once these attempts are exhausted, backing off from 1s up
+  # to 60s regardless of what's configured here.
   auto_reconnect: true
   max_reconnect_attempts: 5
 
@@ -77,6 +81,12 @@ irc:
   # often than the default assumes.
   ping_idle_seconds: 120
   ping_timeout_seconds: 60
+
+  # Minimum gap between successive messages sent to IRC, so a burst (a
+  # long mesh message wrapped into several PRIVMSGs, or replaying
+  # everything queued during an outage right after reconnecting) doesn't
+  # trip the server's flood control. 0 disables pacing entirely.
+  min_send_interval_seconds: 0.3
 
 # Mesh channel index -> IRC channel mapping. Each mesh channel maps to
 # exactly one IRC channel; several mesh channels may map to the same IRC

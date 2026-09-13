@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Communications :: Chat :: Internet Relay Chat",
 ]
 dependencies = [
-    "meshcore>=2.3.9",
+    "meshcore>=2.3.9,<3",
     "bleak>=0.22",
     "pyserial>=3.5",
     "pyyaml>=6.0",
