@@ -239,6 +239,23 @@ async def test_read_message_skips_blank_lines(loopback):
     assert msg.params == ["1"]
 
 
+async def test_read_message_skips_unparseable_lines(loopback, caplog):
+    # A line of pure spaces (or any other line that fails Message.parse,
+    # e.g. a bare "@;") is non-blank per line.strip("\r\n") but has no
+    # command Message.parse can extract -- this must be logged and
+    # skipped, not left to raise out of read_message() and kill the
+    # connection over a single malformed line from a flaky server.
+    client, server_side = loopback
+    server_side.writer.write(b"   \r\n@;\r\nPING :1\r\n")
+    await server_side.writer.drain()
+    with caplog.at_level("WARNING"):
+        msg = await client.read_message()
+    assert msg is not None
+    assert msg.command == "PING"
+    assert msg.params == ["1"]
+    assert caplog.text.count("unparseable IRC line") == 2
+
+
 async def test_read_message_returns_none_on_clean_eof(loopback):
     client, server_side = loopback
     server_side.writer.close()

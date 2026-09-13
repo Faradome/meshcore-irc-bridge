@@ -693,6 +693,29 @@ async def test_ping_watchdog_detects_a_true_black_hole_without_any_close(server)
     assert client.is_ready is False
 
 
+async def test_read_loop_logs_join_failure_numerics(server, caplog):
+    # _join_all_channels() fires JOINs fire-and-forget and is_ready flips
+    # true regardless of how the server actually responds -- a rejected
+    # JOIN must at least be visible in the logs instead of vanishing
+    # silently into "Anything else ... dropped."
+    config = make_config(server, auth=AuthConfig(mode="none"))
+    client, task, conn = await _get_to_ready(server, config)
+
+    with caplog.at_level("WARNING"):
+        await conn.send_line(":irc.example 403 meshbot #general :No such channel")
+        # Proven delivered (not lost) by a later PING still getting answered.
+        await conn.send_line("PING :still-alive")
+        assert await conn.recv_line() == "PONG :still-alive"
+
+    assert "JOIN failed" in caplog.text
+    assert "#general" in caplog.text
+    assert "403" in caplog.text
+    assert "No such channel" in caplog.text
+
+    await client.stop()
+    await task
+
+
 async def test_ping_watchdog_does_not_probe_while_traffic_is_flowing(server):
     config = make_config(server, ping_idle_seconds=0.2, ping_timeout_seconds=5)
     client, task, conn = await _get_to_ready(server, config)

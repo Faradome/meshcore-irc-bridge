@@ -7,17 +7,28 @@ silently defaulting anything security sensitive.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 _VALID_MESH_KINDS = ("ble", "serial", "tcp")
 _VALID_AUTH_MODES = ("sasl", "nickserv", "none")
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+# Generously below IRC's 512-byte line limit -- leaves headroom for
+# "JOIN "/"PRIVMSG " plus the 400-byte content budget
+# (formatting.MAX_LINE_BYTES) once combined with a destination this long,
+# so a channel name can never on its own make every line sent to it too
+# long to send (see ChannelMapping.__post_init__).
+_MAX_IRC_CHANNEL_LEN = 50
 
 
 class ConfigError(Exception):
@@ -169,6 +180,25 @@ class ChannelMapping:
         if not self.irc_channel or self.irc_channel[0] not in "#&":
             raise ConfigError(
                 f"channels[].irc_channel must start with '#' or '&', got {self.irc_channel!r}"
+            )
+        # Both of these pass this far-too-permissive first check and then
+        # wedge the bridge at runtime instead of failing fast here: a space
+        # (or control character) makes format_line() reject every JOIN/
+        # PRIVMSG for this channel forever (the IRC side can never become
+        # ready, or -- for a channel that only breaks the longer PRIVMSG
+        # line -- the same message is retried and fails every ~0.2s
+        # indefinitely, head-of-line-blocking every other channel's queued
+        # messages behind it). Reject both here instead, where a typo is
+        # just a clear ConfigError at startup.
+        if any(c in self.irc_channel for c in " \t\r\n\x00,"):
+            raise ConfigError(
+                "channels[].irc_channel must not contain whitespace, control "
+                f"characters, or commas, got {self.irc_channel!r}"
+            )
+        if len(self.irc_channel) > _MAX_IRC_CHANNEL_LEN:
+            raise ConfigError(
+                f"channels[].irc_channel must be at most {_MAX_IRC_CHANNEL_LEN} "
+                f"characters, got {len(self.irc_channel)}: {self.irc_channel!r}"
             )
 
 
@@ -372,6 +402,30 @@ def build_config(raw: dict[str, Any]) -> BridgeConfig:
     )
 
 
+def _warn_if_world_or_group_readable(config_path: Path) -> None:
+    """Log a warning if `config_path` grants group/other read access.
+
+    The documented setup (`cp config.example.yaml config.yaml`) creates the
+    file under the process umask -- typically world-readable (e.g. 0644) --
+    and a config commonly holds plaintext SASL/NickServ passwords for
+    anyone who skips the `${ENV_VAR}` interpolation option. Best-effort
+    only -- never raises if the mode can't be read at all.
+    """
+    try:
+        mode = config_path.stat().st_mode
+    except OSError:
+        return
+    if mode & (stat.S_IRGRP | stat.S_IROTH):
+        logger.warning(
+            "config file %s is readable by group/other (mode %04o); if it "
+            "contains plaintext secrets (SASL/NickServ passwords), run "
+            "`chmod 600 %s` or use ${ENV_VAR} interpolation instead",
+            config_path,
+            stat.S_IMODE(mode),
+            config_path,
+        )
+
+
 def load_config(path: str | Path) -> BridgeConfig:
     """Load, interpolate, and validate a bridge config file."""
     config_path = Path(path)
@@ -379,6 +433,8 @@ def load_config(path: str | Path) -> BridgeConfig:
         raw_text = config_path.read_text()
     except OSError as exc:
         raise ConfigError(f"could not read config file {config_path}: {exc}") from exc
+
+    _warn_if_world_or_group_readable(config_path)
 
     try:
         raw = yaml.safe_load(raw_text)
