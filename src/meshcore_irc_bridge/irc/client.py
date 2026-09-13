@@ -32,6 +32,15 @@ _RPL_SASLSUCCESS = "903"
 _SASL_FAILURE_NUMERICS = frozenset({"904", "905", "906"})
 _NICK_IN_USE_NUMERICS = frozenset({"433", "436"})
 
+# Standard numerics a server sends instead of actually joining us to a
+# channel we asked for (bad/expired key, full, invite-only, banned, a
+# malformed mask, too many channels already, or it simply doesn't exist).
+# `_join_all_channels` fires JOINs without waiting for any reply, so
+# without this the bridge has no other way to notice: it reports itself
+# ready and streams PRIVMSGs into a channel it was never actually let into,
+# with nothing in its own logs to say so.
+_JOIN_FAILURE_NUMERICS = frozenset({"403", "405", "471", "473", "474", "475", "476"})
+
 
 class IRCError(Exception):
     """Base class for all `IRCClient` errors."""
@@ -316,5 +325,12 @@ class IRCClient:
             ping_sent_at = None  # any byte at all proves the link is alive
             if msg.command == "PING":
                 await self._send("PONG", trailing=msg.param(0, ""))
-            # Anything else (PRIVMSG, NOTICE, ...) from IRC: one-way
-            # bridge, intentionally dropped.
+            elif msg.command in _JOIN_FAILURE_NUMERICS:
+                logger.warning(
+                    "JOIN failed for %s (%s): %s",
+                    msg.param(1, "?"),
+                    msg.command,
+                    msg.param(-1, ""),
+                )
+            # Anything else (PRIVMSG, NOTICE, successful JOIN echoes, ...)
+            # from IRC: one-way bridge, intentionally dropped.

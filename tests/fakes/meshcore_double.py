@@ -1,12 +1,9 @@
 """A hardware-free double for `meshcore.MeshCore`, used by `bridge.py` tests.
 
-Adapted from `meshcorectl`'s own
-`tests/fakes/meshcore_double.py`
-(`/Users/william/src/meshcore/tests/fakes/meshcore_double.py`): the same
-`FakeCommandHandler` scripting mechanism, and real `meshcore.events.Event`/
-`EventType` objects for scripted results (plain dataclasses/enums, no I/O)
-so assertions match exactly what real orchestration code checks
-(`result.is_error()`, `result.payload`, ...).
+Provides a `FakeCommandHandler` scripting mechanism, and real
+`meshcore.events.Event`/`EventType` objects for scripted results (plain
+dataclasses/enums, no I/O) so assertions match exactly what real
+orchestration code checks (`result.is_error()`, `result.payload`, ...).
 """
 
 from __future__ import annotations

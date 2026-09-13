@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import socket
 import ssl
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # 512 bytes total per IRC line, including the trailing CRLF (RFC 2812 2.3).
 MAX_LINE_BYTES = 512
@@ -147,8 +150,8 @@ class IRCConnection:
         return cls(reader, writer)
 
     async def read_message(self) -> Message | None:
-        """Read and parse the next non-blank line, or `None` if the
-        connection is gone.
+        """Read and parse the next parseable, non-blank line, or `None` if
+        the connection is gone.
 
         That covers both a clean EOF and any transport-level error
         (`OSError`/`ssl.SSLError` and subclasses) -- notably, closing the
@@ -157,6 +160,12 @@ class IRCConnection:
         APPLICATION_DATA_AFTER_CLOSE_NOTIFY` on a real TLS connection, not
         a clean EOF; a plain reset surfaces as `ConnectionResetError`. Both
         mean the same thing to a caller: this connection is over.
+
+        A line that reads as non-blank by `strip("\\r\\n")` but still fails
+        `Message.parse` -- e.g. one that's all spaces, or `"@;"` -- is
+        logged and skipped rather than left to raise out of here: a
+        malformed line is a framing curiosity from a flaky server/network,
+        not something that should ever tear down the whole connection.
         """
         while True:
             try:
@@ -169,8 +178,12 @@ class IRCConnection:
                 return None
 
             line = raw.decode("utf-8", errors="replace")
-            if line.strip("\r\n"):
+            if not line.strip("\r\n"):
+                continue
+            try:
                 return Message.parse(line)
+            except ValueError:
+                logger.warning("dropping unparseable IRC line: %r", line)
 
     async def send(self, command: str, *params: str, trailing: str | None = None) -> None:
         line = format_line(command, *params, trailing=trailing)

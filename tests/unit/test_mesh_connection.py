@@ -3,8 +3,7 @@
 `meshcore.MeshCore.create_ble/create_serial/create_tcp` are monkeypatched
 with fake async functions (success, None, and raising) so this fully
 exercises `connect()` -- including its error-wrapping -- without touching
-real BLE, serial, or TCP hardware, mirroring meshcorectl's own
-`tests/unit/test_connect.py`.
+real BLE, serial, or TCP hardware.
 """
 
 from __future__ import annotations

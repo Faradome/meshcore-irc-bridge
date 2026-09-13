@@ -5,6 +5,8 @@ for build_config(); load_config() tests use tmp_path for the one file-I/O seam.
 from __future__ import annotations
 
 import copy
+import os
+from pathlib import Path
 
 import pytest
 import yaml
@@ -601,6 +603,39 @@ def test_build_config_channel_irc_channel_empty():
         build_config(raw)
 
 
+@pytest.mark.parametrize(
+    "irc_channel",
+    ["#has space", "#trailing\t", "#bad\r\n", "#null\x00byte", "#a,#b"],
+)
+def test_build_config_channel_irc_channel_rejects_whitespace_and_control_chars(irc_channel):
+    # A space (or other whitespace/control character) passes the '#'/'&'
+    # prefix check but makes format_line() reject every JOIN/PRIVMSG for
+    # this channel at runtime, wedging the bridge -- reject it here instead,
+    # where it's just a clear ConfigError at startup.
+    raw = _base_config()
+    raw["channels"] = [{"mesh_channel": 0, "irc_channel": irc_channel}]
+    with pytest.raises(ConfigError, match="must not contain whitespace"):
+        build_config(raw)
+
+
+def test_build_config_channel_irc_channel_rejects_excessive_length():
+    # A channel name near IRC's 512-byte line limit passes the '#' prefix
+    # check but makes every PRIVMSG line to it too long to send once
+    # combined with the message content -- same runtime wedge as the
+    # whitespace case above, rejected here for the same reason.
+    raw = _base_config()
+    raw["channels"] = [{"mesh_channel": 0, "irc_channel": "#" + "x" * 500}]
+    with pytest.raises(ConfigError, match="must be at most 50 characters"):
+        build_config(raw)
+
+
+def test_build_config_channel_irc_channel_at_max_length_is_accepted():
+    raw = _base_config()
+    raw["channels"] = [{"mesh_channel": 0, "irc_channel": "#" + "x" * 49}]
+    cfg = build_config(raw)
+    assert cfg.irc_channel_for(0) == "#" + "x" * 49
+
+
 def test_build_config_duplicate_mesh_channel():
     raw = _base_config()
     raw["channels"] = [
@@ -706,3 +741,50 @@ def test_load_config_accepts_str_path(tmp_path):
     config_path.write_text(yaml.safe_dump(_base_config()))
     cfg = load_config(str(config_path))
     assert cfg.irc.server == "irc.example.org"
+
+
+# ---------------------------------------------------------------------------
+# world/group-readable config file warning (plaintext secrets commonly live
+# here; `cp config.example.yaml config.yaml` creates it under the umask,
+# typically world-readable)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+def test_load_config_warns_when_world_readable(tmp_path, caplog):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_base_config()))
+    os.chmod(config_path, 0o644)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path)
+
+    assert "readable by group/other" in caplog.text
+    assert "chmod 600" in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+def test_load_config_no_warning_when_permissions_are_restrictive(tmp_path, caplog):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_base_config()))
+    os.chmod(config_path, 0o600)
+
+    with caplog.at_level("WARNING"):
+        load_config(config_path)
+
+    assert "readable by group/other" not in caplog.text
+
+
+def test_load_config_permission_check_tolerates_stat_failure(tmp_path, caplog, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_base_config()))
+
+    def raise_oserror(self):
+        raise OSError("simulated stat failure")
+
+    monkeypatch.setattr(Path, "stat", raise_oserror)
+
+    with caplog.at_level("WARNING"):
+        cfg = load_config(config_path)  # must not raise
+    assert cfg.irc.server == "irc.example.org"
+    assert "readable by group/other" not in caplog.text

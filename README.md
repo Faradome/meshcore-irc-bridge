@@ -43,7 +43,13 @@ Copy [`config.example.yaml`](config.example.yaml) to `config.yaml` and edit it:
 
 ```bash
 cp config.example.yaml config.yaml
+chmod 600 config.yaml
 ```
+
+`cp` creates the copy with your umask's default permissions, typically
+world-readable -- worth locking down since the file commonly ends up
+holding plaintext SASL/NickServ passwords (the bridge warns at startup if
+it finds `config.yaml` still readable by group/other).
 
 - `mesh.connection` — how to reach your companion radio: `type: ble` (with
   `address`), `type: serial` (with `port`/`baudrate`), or `type: tcp` (with
