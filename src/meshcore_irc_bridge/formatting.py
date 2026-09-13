@@ -25,6 +25,14 @@ MAX_LINE_BYTES = 400
 
 _LINE_SPLIT = re.compile(r"\r\n|\r|\n")
 
+# C0 control characters other than tab, which is left alone as harmless
+# formatting. CR/LF are handled separately (split into their own output
+# lines, see _LINE_SPLIT) rather than here -- everything else in this
+# range (NUL, ESC, ...) has no legitimate place in relayed chat text and
+# is simply mesh-side noise once it reaches an IRC client, so it's
+# stripped rather than forwarded unescaped into PRIVMSG content.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 
 def _wrap_to_byte_limit(text: str, max_bytes: int) -> list[str]:
     """Split `text` into chunks whose UTF-8 encoding is at most `max_bytes`.
@@ -58,6 +66,9 @@ def format_channel_message(
       lines instead of being forwarded raw: a raw newline inside a single
       PRIVMSG line would let mesh content forge additional IRC protocol
       lines (command injection over the wire).
+    - Every other C0 control character (NUL, ESC, ...) is stripped -- mesh
+      payloads are untrusted input, and none of them have a legitimate
+      place in chat text relayed to an IRC client.
     - Each logical line is wrapped at `max_line_bytes` (UTF-8 bytes, never
       splitting a multi-byte character) rather than silently truncated.
     - A missing/non-string/empty `text`, or one that is blank once split,
@@ -79,7 +90,8 @@ def format_channel_message(
     available = max(max_line_bytes - len(prefix.encode("utf-8")), 1)
 
     lines: list[str] = []
-    for logical_line in _LINE_SPLIT.split(text):
+    for raw_line in _LINE_SPLIT.split(text):
+        logical_line = _CONTROL_CHARS.sub("", raw_line)
         if not logical_line.strip():
             continue
         lines.extend(f"{prefix}{chunk}" for chunk in _wrap_to_byte_limit(logical_line, available))

@@ -107,6 +107,26 @@ def test_main_applies_requested_log_level(tmp_path, monkeypatch):
         root.handlers[:] = saved_handlers
 
 
+def test_main_returns_1_on_unhandled_runtime_error(tmp_path, monkeypatch, capsys):
+    # Anything reaching main() other than ConfigError/KeyboardInterrupt is a
+    # bug, not a config problem -- it must exit 1 with a logged traceback
+    # instead of an unhandled traceback and whatever exit status Python
+    # happens to give that.
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_valid_config_dict()))
+
+    class FakeBridge:
+        def __init__(self, config):
+            pass
+
+        async def run(self):
+            raise RuntimeError("totally unexpected")
+
+    monkeypatch.setattr(cli, "Bridge", FakeBridge)
+
+    assert cli.main(["--config", str(config_path)]) == 1
+
+
 def test_main_handles_keyboard_interrupt(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(_valid_config_dict()))

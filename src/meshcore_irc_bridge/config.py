@@ -64,6 +64,19 @@ class MeshConnectionConfig:
 
 @dataclass(frozen=True)
 class MeshConfig:
+    """`auto_reconnect`/`max_reconnect_attempts` configure the `meshcore`
+    library's *own* reconnect loop, which sits underneath this bridge's own
+    (`bridge.py`'s `_run_mesh_supervisor`, exponential backoff from 1s up
+    to 60s). On an unexpected disconnect, the library first retries up to
+    `max_reconnect_attempts` times at its own flat ~1s interval (logged at
+    DEBUG, not INFO) *before* it ever emits the event this bridge is
+    watching for; only once the library gives up does this bridge's own
+    supervisor take over. The two layers are independent and not meant to
+    be tuned together -- this one bounds how hard the library retries a
+    single drop, the bridge's own backoff is what actually governs
+    long-outage behavior.
+    """
+
     connection: MeshConnectionConfig
     auto_reconnect: bool = True
     max_reconnect_attempts: int = 5
@@ -151,6 +164,14 @@ class IrcConfig:
     # Worst-case detection time is ping_idle_seconds + ping_timeout_seconds.
     ping_idle_seconds: float = 120.0
     ping_timeout_seconds: float = 60.0
+    # Minimum spacing between successive PRIVMSGs the queue-drain loop
+    # sends. Without this, a burst -- a long multi-line mesh message
+    # wrapped into many PRIVMSGs, or replaying everything queued during an
+    # outage the moment IRC reconnects -- can exceed a server's own
+    # flood-control thresholds, which then throttles or drops the
+    # connection and turns one burst into a disconnect/reconnect/replay
+    # loop. 0 disables pacing entirely.
+    min_send_interval_seconds: float = 0.3
 
     def __post_init__(self) -> None:
         if not self.server:
@@ -167,6 +188,22 @@ class IrcConfig:
             raise ConfigError("irc.ping_idle_seconds must be > 0")
         if self.ping_timeout_seconds <= 0:
             raise ConfigError("irc.ping_timeout_seconds must be > 0")
+        if self.min_send_interval_seconds < 0:
+            raise ConfigError("irc.min_send_interval_seconds must be >= 0")
+        if not self.tls and self.auth.mode in ("sasl", "nickserv"):
+            # Silent until now: `_warn_if_world_or_group_readable` already
+            # warns about secrets sitting readable on disk, but nothing
+            # warned about them going out on the wire in the clear, which
+            # is exactly what a plaintext `sasl`/`nickserv` connection does
+            # (SASL PLAIN's base64 blob and IDENTIFY's password are both
+            # trivially decodable/plaintext -- "encoded", not encrypted).
+            logger.warning(
+                "irc.tls is false while irc.auth.mode is %r: credentials will be sent "
+                "unencrypted to %s:%d, readable by anyone on the network path",
+                self.auth.mode,
+                self.server,
+                self.port,
+            )
 
 
 @dataclass(frozen=True)
@@ -363,6 +400,9 @@ def _build_irc_config(raw: dict[str, Any]) -> IrcConfig:
         ),
         ping_timeout_seconds=_coerce_float(
             raw.get("ping_timeout_seconds", 60.0), "irc.ping_timeout_seconds"
+        ),
+        min_send_interval_seconds=_coerce_float(
+            raw.get("min_send_interval_seconds", 0.3), "irc.min_send_interval_seconds"
         ),
     )
 

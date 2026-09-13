@@ -281,6 +281,24 @@ async def test_read_message_returns_none_on_transport_error(loopback, monkeypatc
     assert await client.read_message() is None
 
 
+async def test_read_message_returns_none_on_oversized_line(loopback, monkeypatch, caplog):
+    # More than the reader's internal buffer limit arriving with no
+    # newline in sight raises asyncio.LimitOverrunError, which -- unlike
+    # every other transport-level failure this method handles -- is a
+    # plain Exception, not an OSError subclass. It must still be treated
+    # as "the connection is gone" rather than escaping and crashing the
+    # caller.
+    client, _server_side = loopback
+
+    async def raise_limit_overrun(*_args, **_kwargs):
+        raise asyncio.LimitOverrunError("line too long", 0)
+
+    monkeypatch.setattr(client._reader, "readuntil", raise_limit_overrun)
+    with caplog.at_level("WARNING"):
+        assert await client.read_message() is None
+    assert "exceeded the read buffer limit" in caplog.text
+
+
 async def test_read_message_parses_final_unterminated_line_before_eof(loopback):
     client, server_side = loopback
     server_side.writer.write(b"PING :123")  # no trailing \n

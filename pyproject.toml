@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshcore-irc-bridge"
-version = "0.1.2"
+version = "0.1.3"
 description = "A one-way bridge relaying MeshCore companion radio channel messages into IRC channels"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Communications :: Chat :: Internet Relay Chat",
 ]
 dependencies = [
-    "meshcore>=2.3.9",
+    "meshcore>=2.3.9,<3",
     "bleak>=0.22",
     "pyserial>=3.5",
     "pyyaml>=6.0",

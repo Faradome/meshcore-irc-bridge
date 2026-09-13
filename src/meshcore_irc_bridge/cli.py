@@ -88,4 +88,11 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(_run(bridge))
     except KeyboardInterrupt:
         return 0
+    except Exception:
+        # Anything reaching here is a bug, not a config problem (those are
+        # already handled above as ConfigError) -- logged with a traceback
+        # and a clean exit code instead of an unhandled traceback and
+        # whatever exit status Python happens to give that.
+        logger.exception("unhandled error")
+        return 1
     return 0

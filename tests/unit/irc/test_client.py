@@ -11,6 +11,7 @@ import base64
 import pytest
 
 from meshcore_irc_bridge.config import AuthConfig, IrcConfig, NickservConfig, SaslConfig
+from meshcore_irc_bridge.irc import client as client_module
 from meshcore_irc_bridge.irc.client import IRCAuthError, IRCClient, IRCConnectionClosed
 from tests.fakes.fake_irc_server import FakeIRCConnection, FakeIRCServer
 
@@ -731,3 +732,91 @@ async def test_ping_watchdog_does_not_probe_while_traffic_is_flowing(server):
 
     await client.stop()
     await task
+
+
+# ---------------------------------------------------------------------------
+# stop() interrupting an in-flight connect (H1)
+#
+# IRCConnection.open() (DNS + TCP + TLS handshake) has no timeout of its
+# own, and self._conn is still None throughout it -- stop()'s usual
+# "close self._conn to unblock the read" trick has nothing to act on. These
+# tests prove stop() cancels the connect itself instead.
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_cancels_an_in_flight_connect(monkeypatch):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hanging_open(*_args, **_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    monkeypatch.setattr(client_module.IRCConnection, "open", hanging_open)
+
+    config = IrcConfig(
+        server="127.0.0.1",
+        port=1,
+        nickname="meshbot",
+        auth=AuthConfig(mode="none"),
+        tls=False,
+    )
+    client = IRCClient(config, ["#general"])
+    task = asyncio.create_task(client.run_until_disconnected())
+
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await client.stop()
+    # Must return promptly (no exception) rather than hang until the
+    # (never-completing) connect finishes on its own.
+    await asyncio.wait_for(task, timeout=1)
+
+    assert cancelled.is_set()
+    assert client.is_ready is False
+
+
+async def test_connect_cancellation_propagates_when_not_stopping(monkeypatch):
+    # Distinct from test_stop_cancels_an_in_flight_connect: a cancellation
+    # that didn't come from our own stop() (self._stopping still False,
+    # e.g. the whole task being torn down for an unrelated reason) must
+    # propagate as a real CancelledError, not be swallowed as if it were a
+    # deliberate stop().
+    started = asyncio.Event()
+
+    async def hanging_open(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(client_module.IRCConnection, "open", hanging_open)
+
+    config = IrcConfig(
+        server="127.0.0.1",
+        port=1,
+        nickname="meshbot",
+        auth=AuthConfig(mode="none"),
+        tls=False,
+    )
+    client = IRCClient(config, ["#general"])
+    task = asyncio.create_task(client.run_until_disconnected())
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_stop_does_not_touch_an_already_finished_connect(server):
+    # The counterpart to the above: once IRCConnection.open() has already
+    # completed, stop() must fall through to closing self._conn as normal
+    # rather than trying (and failing) to cancel a done task.
+    config = make_config(server, auth=AuthConfig(mode="none"))
+    client, task, _conn = await start_client(server, config)
+    await asyncio.sleep(0)  # let the connect task settle into "done"
+
+    await client.stop()
+    await task  # must not raise
+    assert client.is_ready is False

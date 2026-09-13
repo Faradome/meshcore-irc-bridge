@@ -161,6 +161,15 @@ class IRCConnection:
         a clean EOF; a plain reset surfaces as `ConnectionResetError`. Both
         mean the same thing to a caller: this connection is over.
 
+        It also covers `asyncio.LimitOverrunError`: more than the reader's
+        internal buffer limit (64 KiB by default) arriving with no `\\n` in
+        sight. A real IRC line is capped at 512 bytes, so this can only be
+        a malformed or hostile peer -- `LimitOverrunError` is a plain
+        `Exception`, not an `OSError` subclass, so it would otherwise
+        escape this method entirely and tear down the connection with an
+        unhandled exception instead of the ordinary "gone" outcome every
+        other caller already expects.
+
         A line that reads as non-blank by `strip("\\r\\n")` but still fails
         `Message.parse` -- e.g. one that's all spaces, or `"@;"` -- is
         logged and skipped rather than left to raise out of here: a
@@ -174,6 +183,13 @@ class IRCConnection:
                 if not exc.partial:
                     return None
                 raw = exc.partial
+            except asyncio.LimitOverrunError:
+                # Recovering by draining and resyncing on the wire isn't
+                # worth the complexity for a case IRC's own 512-byte line
+                # limit forbids outright -- treat it the same as any other
+                # fatal transport condition and let the caller reconnect.
+                logger.warning("IRC line exceeded the read buffer limit; dropping connection")
+                return None
             except OSError:
                 return None
 
